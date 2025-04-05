@@ -1,0 +1,51 @@
+{
+    "domain": "dev-test.local",
+    "project_name": "whitelabel_platform",
+    "environment": "development",
+    "nginx": {
+      "ports": [
+        "80:80",
+        "443:443"
+      ]
+    },
+    "php": {
+      "version": "8.3"
+    },
+    "databases": {
+      "redis": {
+        "password": "whitelabel123"
+      },
+      "mongodb": {
+        "username": "whitelabel",
+        "password": "mongo123"
+      },
+      "mysql": {
+        "username": "whitelabel",
+        "password": "mysql123"
+      },
+      "sqlserver": {
+        "password": "SqlServer@123"
+      },
+      "oracle": {
+        "password": "oracle123"
+      }
+    },
+    "services": {
+      "admin": {
+        "repository": "https://github.com/dotkernel/admin.git",
+        "path": "admin.$DOMAIN"
+      },
+      "api": {
+        "repository": "https://github.com/dotkernel/api.git",
+        "path": "api.$DOMAIN"
+      },
+      "www": {
+        "type": "laminas",
+        "path": "www.$DOMAIN"
+      },
+      "packages": {
+        "repository": "https://github.com/project-satisfy/satisfy.git",
+        "path": "packages.$DOMAIN"
+      }
+    }
+  }
