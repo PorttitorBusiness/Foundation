@@ -1,462 +1,423 @@
 #!/bin/bash
 
-set -x  # 📜 Ativa saída detalhada para depuração
+# Emojis para feedback
+CHECK="✅"
+ERROR="❌"
+INFO="ℹ️"
+RUNNING="🚀"
+WARNING="⚠️"
 
-# 🚀 Define variáveis de ambiente
-PROJECT_ROOT="$(pwd)"
-PROJECT_DIR="$PROJECT_ROOT/projects"
-LOG_FILE="$PROJECT_DIR/deploy.log"
+# Caminho base no WSL2
+BASE_DIR="/home/developer/workspace/deploy_project/deploy"
+BIN_DIR="/home/developer/workspace/deploy_project/bin/sh/server"
+STACK_NAME="php-dev-server"
+NETWORK_NAME="php-dev-network"
+LOG_DIR="$BASE_DIR/logs"
 
-# 📁 Cria o diretório do projeto
-mkdir -p "$PROJECT_DIR"
-echo "🚀 Iniciando implantação whitelabel via JSON" | tee -a "$LOG_FILE"
-
-# ✅ Função para verificar o status de comandos
-check_status() {
-    if [ $? -ne 0 ]; then
-        echo "❌ Erro: $1 falhou. Veja $LOG_FILE para detalhes." | tee -a "$LOG_FILE"
-        docker-compose logs >> "$LOG_FILE" 2>&1
-        exit 1
-    fi
-}
-
-# 📝 Lê configurações do project_master.json
-if [ ! -f "$PROJECT_ROOT/project_master.json" ]; then
-    echo "❌ Arquivo project_master.json não encontrado! Crie-o no diretório raiz." | tee -a "$LOG_FILE"
-    exit 1
+# Verifica ambiente
+echo "$INFO Verificando ambiente..." | tee -a "$LOG_DIR/deploy.log"
+if [ ! -d "$BIN_DIR" ]; then
+    echo "$ERROR Diretório $BIN_DIR não encontrado! Criando estrutura..." | tee -a "$LOG_DIR/deploy.log"
+    mkdir -p "$BIN_DIR" || { echo "$ERROR Falha ao criar diretórios!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
 fi
-DOMAIN=$(jq -r '.domain' "$PROJECT_ROOT/project_master.json")
-PROJECT_NAME=$(jq -r '.project_name' "$PROJECT_ROOT/project_master.json")
-ENVIRONMENT=$(jq -r '.environment // "development"' "$PROJECT_ROOT/project_master.json")
-NGINX_PORTS=$(jq -r '.nginx.ports[]' "$PROJECT_ROOT/project_master.json" | tr '\n' ' ')
-PHP_VERSION=$(jq -r '.php.version // "8.3"' "$PROJECT_ROOT/project_master.json")
-REDIS_PASS=$(jq -r '.databases.redis.password // .project_name' "$PROJECT_ROOT/project_master.json")
-MONGO_USER=$(jq -r '.databases.mongodb.username // .project_name' "$PROJECT_ROOT/project_master.json")
-MONGO_PASS=$(jq -r '.databases.mongodb.password // .project_name' "$PROJECT_ROOT/project_master.json")
-MYSQL_USER=$(jq -r '.databases.mysql.username // .project_name' "$PROJECT_ROOT/project_master.json")
-MYSQL_PASS=$(jq -r '.databases.mysql.password // .project_name' "$PROJECT_ROOT/project_master.json")
-SQLSERVER_PASS=$(jq -r '.databases.sqlserver.password // (.project_name + "@123")' "$PROJECT_ROOT/project_master.json")
-ORACLE_PASS=$(jq -r '.databases.oracle.password // .project_name' "$PROJECT_ROOT/project_master.json")
-echo "🌟 Configurações lidas: DOMAIN=$DOMAIN, PROJECT_NAME=$PROJECT_NAME, ENVIRONMENT=$ENVIRONMENT" | tee -a "$LOG_FILE"
 
-# 📂 Define diretório específico do projeto
-PROJECT_DIR="$PROJECT_DIR/$DOMAIN"
-mkdir -p "$PROJECT_DIR"
+cd "$BIN_DIR" || { echo "$ERROR Não foi possível acessar $BIN_DIR!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
 
-# 📜 Geração de Arquivos de Configuração
-generate_config_files() {
-    echo "📝 Gerando arquivos de configuração..." | tee -a "$LOG_FILE"
-    mkdir -p "$PROJECT_DIR/docker/nginx/sites" "$PROJECT_DIR/docker/php" "$PROJECT_DIR/src/admin.$DOMAIN" "$PROJECT_DIR/src/api.$DOMAIN" "$PROJECT_DIR/src/www.$DOMAIN" "$PROJECT_DIR/src/packages.$DOMAIN"
+# Criação do diretório do projeto e logs
+echo "$INFO Criando diretório do projeto em $BASE_DIR..." | tee -a "$LOG_DIR/deploy.log"
+mkdir -p "$BASE_DIR" "$LOG_DIR" || { echo "$ERROR Falha ao criar $BASE_DIR ou $LOG_DIR!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
+cd "$BASE_DIR" || { echo "$ERROR Não foi possível acessar $BASE_DIR!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
 
-    # 📋 Cria .env
-    cat <<EOF > "$PROJECT_DIR/.env"
-# Projeto
-PROJECT_NAME=$PROJECT_NAME
-DOMAIN=$DOMAIN
-ENVIRONMENT=$ENVIRONMENT
-# Bancos
-REDIS_HOST=redis
-REDIS_PASS=$REDIS_PASS
-MONGO_HOST=mongodb
-MONGO_USER=$MONGO_USER
-MONGO_PASS=$MONGO_PASS
-MYSQL_HOST=mysql
-MYSQL_USER=$MYSQL_USER
-MYSQL_PASS=$MYSQL_PASS
-SQLSERVER_HOST=sqlserver
-SQLSERVER_PASS=$SQLSERVER_PASS
-ORACLE_HOST=oracle
-ORACLE_PASS=$ORACLE_PASS
-EOF
+# Criação da rede Docker
+echo "$RUNNING Criando rede Docker: $NETWORK_NAME $CHECK" | tee -a "$LOG_DIR/deploy.log"
+docker network create $NETWORK_NAME 2>/dev/null || echo "$WARNING Rede já existe" | tee -a "$LOG_DIR/deploy.log"
 
-    # 📜 Cria docker-compose.yml
-    cat <<EOF > "$PROJECT_DIR/docker-compose.yml"
+# Criação de volumes Docker
+echo "$RUNNING Criando volumes Docker $CHECK" | tee -a "$LOG_DIR/deploy.log"
+docker volume create mysql-data 2>/dev/null || echo "$WARNING Volume mysql-data já existe" | tee -a "$LOG_DIR/deploy.log"
+docker volume create redis-data 2>/dev/null || echo "$WARNING Volume redis-data já existe" | tee -a "$LOG_DIR/deploy.log"
+
+# Criação do docker-compose.yml
+echo "$RUNNING Gerando docker-compose.yml $CHECK" | tee -a "$LOG_DIR/deploy.log"
+cat <<EOF > "$BASE_DIR/docker-compose.yml"
+version: '3.8'
+
 services:
-  nginx:
-    image: nginx:latest
-    ports:
-      - $NGINX_PORTS
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: api
     volumes:
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./docker/nginx/sites:/etc/nginx/conf.d
-      - ./src/admin.$DOMAIN:/var/www/admin.$DOMAIN
-      - ./src/api.$DOMAIN:/var/www/api.$DOMAIN
-      - ./src/www.$DOMAIN:/var/www/www.$DOMAIN
-      - ./src/packages.$DOMAIN:/var/www/packages.$DOMAIN
+      - ./api:/var/www/api
+    ports:
+      - "8080:80"
+      - "443:443"  # HTTP/3 via QUIC
+      - "1883:1883"  # MQTT para IoT (TCP)
+      - "1883:1883/udp"  # MQTT para IoT (UDP)
+    environment:
+      - APP_ENV=development
+      - REDIS_HOST=\${REDIS_HOST}
+      - REDIS_PORT=\${REDIS_PORT}
+      - REDIS_PASSWORD=\${REDIS_PASSWORD}
     depends_on:
-      - php
+      - mysql
+      - redis
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 512M
-    restart: unless-stopped
     networks:
-      - app-net
-  php:
+      - $NETWORK_NAME
+
+  admin:
     build:
-      context: ./docker/php
+      context: ./admin
       dockerfile: Dockerfile
+    container_name: admin
     volumes:
-      - ./src/admin.$DOMAIN:/var/www/admin.$DOMAIN
-      - ./src/api.$DOMAIN:/var/www/api.$DOMAIN
-      - ./src/www.$DOMAIN:/var/www/www.$DOMAIN
-      - ./src/packages.$DOMAIN:/var/www/packages.$DOMAIN
+      - ./admin:/var/www/admin
+    ports:
+      - "8081:80"
+    environment:
+      - APP_ENV=development
     depends_on:
-      - redis
-      - mongodb
       - mysql
-      - sqlserver
-      - oracle
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - $NETWORK_NAME
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    volumes:
+      - ./frontend:/var/www/frontend
+    ports:
+      - "8082:80"
+    environment:
+      - APP_ENV=development
+      - REDIS_HOST=\${REDIS_HOST}
+      - REDIS_PORT=\${REDIS_PORT}
+      - REDIS_PASSWORD=\${REDIS_PASSWORD}
+    depends_on:
+      - mysql
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - $NETWORK_NAME
+
+  light:
+    build:
+      context: ./light
+      dockerfile: Dockerfile
+    container_name: light
+    volumes:
+      - ./light:/var/www/light
+    ports:
+      - "8083:80"
+    environment:
+      - APP_ENV=development
+    depends_on:
+      - mysql
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - $NETWORK_NAME
+
+  nginx:
+    image: nginx:1.25  # Suporte a HTTP/3
+    container_name: nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+    ports:
+      - "80:80"
+      - "443:443"  # HTTP/3 via QUIC
+      - "443:443/udp"  # QUIC requer UDP
+    command: ["nginx", "-g", "daemon off;"]
+    depends_on:
+      - api
+      - admin
+      - frontend
+      - light
+    networks:
+      - $NETWORK_NAME
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    volumes:
+      - mysql-data:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=\${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=\${MYSQL_DATABASE}
+      - MYSQL_USER=\${MYSQL_USER}
+      - MYSQL_PASSWORD=\${MYSQL_PASSWORD}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 1G
-    restart: unless-stopped
     networks:
-      - app-net
+      - $NETWORK_NAME
+
   redis:
-    image: redis:latest
-    command: redis-server --requirepass $REDIS_PASS
+    image: redis:7.0
+    container_name: redis
+    volumes:
+      - redis-data:/data
+    command: redis-server --requirepass \${REDIS_PASSWORD}
     deploy:
       resources:
         limits:
           cpus: '0.25'
           memory: 256M
-    restart: unless-stopped
     networks:
-      - app-net
-  mongodb:
-    image: mongo:latest
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: $MONGO_USER
-      MONGO_INITDB_ROOT_PASSWORD: $MONGO_PASS
-    volumes:
-      - mongo-data:/data/db
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-    restart: unless-stopped
-    networks:
-      - app-net
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: $MYSQL_PASS
-      MYSQL_DATABASE: ${PROJECT_NAME}_db
-      MYSQL_USER: $MYSQL_USER
-      MYSQL_PASSWORD: $MYSQL_PASS
-    volumes:
-      - mysql-data:/var/lib/mysql
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-    restart: unless-stopped
-    networks:
-      - app-net
-  sqlserver:
-    image: mcr.microsoft.com/mssql/server:2019-latest
-    environment:
-      ACCEPT_EULA: Y
-      SA_PASSWORD: $SQLSERVER_PASS
-      MSSQL_PID: Express
-    volumes:
-      - sqlserver-data:/var/opt/mssql
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 1G
-    restart: unless-stopped
-    networks:
-      - app-net
-  oracle:
-    image: gvenzl/oracle-xe:latest
-    environment:
-      ORACLE_PASSWORD: $ORACLE_PASS
-    volumes:
-      - oracle-data:/opt/oracle/oradata
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 1G
-    restart: unless-stopped
-    networks:
-      - app-net
+      - $NETWORK_NAME
+
 networks:
-  app-net:
-    driver: bridge
+  $NETWORK_NAME:
+    external: true
+
 volumes:
-  mongo-data:
   mysql-data:
-  sqlserver-data:
-  oracle-data:
+    external: true
+  redis-data:
+    external: true
 EOF
 
-    # 📜 Cria Dockerfile para PHP-FPM
-    cat <<EOF > "$PROJECT_DIR/docker/php/Dockerfile"
+# Criação dos Dockerfiles com Doctrine e Redis
+echo "$RUNNING Gerando Dockerfiles $CHECK" | tee -a "$LOG_DIR/deploy.log"
+for SERVICE in api admin frontend light; do
+    mkdir -p "$BASE_DIR/$SERVICE"
+    PHP_VERSION="8.1"
+    if [ "$SERVICE" = "frontend" ] || [ "$SERVICE" = "light" ]; then
+        PHP_VERSION="8.2"
+    fi
+    cat <<EOF > "$BASE_DIR/$SERVICE/Dockerfile"
 FROM php:$PHP_VERSION-fpm
-RUN apt-get update && apt-get install -y \\
-    libpq-dev libzip-dev unzip git libxml2-dev libpng-dev libjpeg-dev libfreetype6-dev \\
-    libonig-dev libcurl4-openssl-dev libssl-dev libxslt1-dev \\
-    && docker-php-ext-configure gd --with-freetype --with-jpeg \\
-    && docker-php-ext-install pdo pdo_mysql pdo_pgsql zip xml gd curl bcmath mbstring intl xsl soap
-RUN pecl install redis mongodb && docker-php-ext-enable redis mongodb
+RUN apt-get update && apt-get install -y git unzip libpq-dev && \\
+    docker-php-ext-install pdo_mysql && \\
+    pecl install redis && docker-php-ext-enable redis
+WORKDIR /var/www/$SERVICE
+COPY . .
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-WORKDIR /var/www
-RUN chown -R www-data:www-data /var/www
+RUN composer install --no-dev --optimize-autoloader
+EXPOSE 80
 CMD ["php-fpm"]
 EOF
+done
 
-    # 🌐 Cria nginx.conf com HTTP/3 simulado
-    cat <<EOF > "$PROJECT_DIR/docker/nginx/nginx.conf"
-user nginx;
-worker_processes auto;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
-events {
-    worker_connections 1024;
-}
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" \$status \$body_bytes_sent';
-    access_log /var/log/nginx/access.log main;
-    sendfile on;
-    keepalive_timeout 65;
-    server {
-        listen 80;
-        listen 443 ssl http2;
-        listen 443 quic reuseport;
-        ssl_certificate /etc/nginx/ssl/cert.pem;  # Placeholder
-        ssl_certificate_key /etc/nginx/ssl/key.pem;  # Placeholder
-        http3 on;
-        include /etc/nginx/conf.d/*.conf;
-    }
-}
-EOF
-
-    # 🌍 Configurações de subdomínios para Nginx com PHP-FPM
-    for subdomain in "admin.$DOMAIN" "api.$DOMAIN" "www.$DOMAIN" "packages.$DOMAIN"; do
-        cat <<EOF > "$PROJECT_DIR/docker/nginx/sites/$subdomain.conf"
+# Configuração do Nginx com HTTP/3
+echo "$RUNNING Configurando Nginx com HTTP/3 $CHECK" | tee -a "$LOG_DIR/deploy.log"
+mkdir -p "$BASE_DIR/nginx"
+cat <<EOF > "$BASE_DIR/nginx/nginx.conf"
 server {
     listen 80;
-    server_name $subdomain;
-    root /var/www/$subdomain/public;
-    index index.php index.html;
+    listen 443 ssl http2;
+    listen 443 quic reuseport;  # HTTP/3 via QUIC
+    server_name api.localhost;
+    ssl_certificate /etc/nginx/ssl/cert.pem;  # Placeholder
+    ssl_certificate_key /etc/nginx/ssl/key.pem;  # Placeholder
     location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        proxy_pass http://api:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
     }
-    location ~ \.php\$ {
-        fastcgi_pass php:9000;
-        fastcgi_index index.php;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+}
+
+server {
+    listen 80;
+    server_name admin.localhost;
+    location / {
+        proxy_pass http://admin:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+
+server {
+    listen 80;
+    server_name frontend.localhost;
+    location / {
+        proxy_pass http://frontend:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+
+server {
+    listen 80;
+    server_name light.localhost;
+    location / {
+        proxy_pass http://light:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
     }
 }
 EOF
-    done
 
-    # 📦 Clona os repositórios específicos
-    git clone https://github.com/dotkernel/admin.git "$PROJECT_DIR/src/admin.$DOMAIN" || echo "⚠️ dotkernel/admin já clonado ou erro, prosseguindo..." | tee -a "$LOG_FILE"
-    git clone https://github.com/dotkernel/api.git "$PROJECT_DIR/src/api.$DOMAIN" || echo "⚠️ dotkernel/api já clonado ou erro, prosseguindo..." | tee -a "$LOG_FILE"
-    git clone https://github.com/project-satisfy/satisfy.git "$PROJECT_DIR/src/packages.$DOMAIN" || echo "⚠️ project-satisfy/satisfy já clonado ou erro, prosseguindo..." | tee -a "$LOG_FILE"
-    mkdir -p "$PROJECT_DIR/src/www.$DOMAIN/public" && cd "$PROJECT_DIR/src/www.$DOMAIN" && composer create-project laminas/laminas-mvc-skeleton . || echo "⚠️ Laminas já criado ou erro, prosseguindo..." | tee -a "$LOG_FILE"
-}
+# Geração do .env
+echo "$RUNNING Gerando .env $CHECK" | tee -a "$LOG_DIR/deploy.log"
+cat <<EOF > "$BASE_DIR/.env"
+# Geral
+APP_ENV=development
+APP_SECRET=devsecretkey789
 
-# 🚀 Provisionamento com Aguarde
-provision_environment() {
-    echo "🚀 Provisionando ambiente..." | tee -a "$LOG_FILE"
-    if ! docker info > /dev/null 2>&1; then
-        echo "❌ Docker não está em execução. Certifique-se de que o Docker Desktop está iniciado no Windows." | tee -a "$LOG_FILE"
-        exit 1
+# MySQL
+MYSQL_ROOT_PASSWORD=rootpass
+MYSQL_DATABASE=dotkernel_db
+MYSQL_USER=dotkernel
+MYSQL_PASSWORD=dotpass
+
+# Redis
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_PASSWORD=redispass
+
+# OAuth2 (API como provedor)
+OAUTH2_ISSUER=http://api.localhost
+OAUTH2_CLIENT_ID=dotkernel_client
+OAUTH2_CLIENT_SECRET=dotkernel_secret
+OAUTH2_REDIRECT_URI=http://api.localhost/oauth/callback
+OAUTH2_TOKEN_ENDPOINT=http://api.localhost/oauth/token
+OAUTH2_AUTH_ENDPOINT=http://api.localhost/oauth/authorize
+JWT_SECRET=jwtsecretkey123
+EOF
+
+# Clonagem dos repositórios
+echo "$RUNNING Clonando repositórios Dotkernel $CHECK" | tee -a "$LOG_DIR/deploy.log"
+for REPO in api admin frontend light; do
+    if [ ! -d "$BASE_DIR/$REPO/.git" ]; then
+        git clone "https://github.com/dotkernel/$REPO.git" "$BASE_DIR/$REPO" || { echo "$ERROR Falha ao clonar $REPO!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
+    else
+        echo "$WARNING Repositório $REPO já clonado" | tee -a "$LOG_DIR/deploy.log"
     fi
-    cd "$PROJECT_DIR"
-    sleep 5  # ⏳ Delay inicial para estabilizar Docker
-    docker-compose up -d --build --pull always
-    check_status "Inicialização do Docker Compose"
-    SERVICES=("mysql" "redis" "mongodb" "sqlserver" "oracle" "php" "nginx")
-    for service in "${SERVICES[@]}"; do
-        until docker-compose ps | grep "$service" | grep -q "Up"; do
-            echo "⏳ Aguardando $service ficar ativo..." | tee -a "$LOG_FILE"
-            sleep 2
-        done
-        echo "✅ $service está ativo!" | tee -a "$LOG_FILE"
-    done
-}
+done
 
-# 📦 Instalação de Dependências
-install_dependencies() {
-    echo "📦 Instalando dependências..." | tee -a "$LOG_FILE"
-    sudo apt-get update >> "$LOG_FILE" 2>&1
-    sudo apt-get install -y php8.3 php8.3-cli php8.3-mysql php8.3-zip php8.3-curl php8.3-xml php8.3-gd php8.3-mbstring php8.3-intl php8.3-bcmath php8.3-xsl php8.3-soap composer jq >> "$LOG_FILE" 2>&1
-    check_status "Instalação do PHP, Composer e jq"
+# Configuração do Doctrine e OAuth2
+echo "$RUNNING Configurando Doctrine e OAuth2 $CHECK" | tee -a "$LOG_DIR/deploy.log"
+for SERVICE in api admin frontend light; do
+    cd "$BASE_DIR/$SERVICE" || { echo "$ERROR Não foi possível acessar $SERVICE!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
+    # Doctrine
+    if [ -f "config/autoload/doctrine.local.php.dist" ]; then
+        cp config/autoload/doctrine.local.php.dist config/autoload/doctrine.local.php
+        sed -i "s|'dbname' => '.*'|'dbname' => 'dotkernel_db'|" config/autoload/doctrine.local.php
+        sed -i "s|'user' => '.*'|'user' => 'dotkernel'|" config/autoload/doctrine.local.php
+        sed -i "s|'password' => '.*'|'password' => 'dotpass'|" config/autoload/doctrine.local.php
+        sed -i "s|'host' => '.*'|'host' => 'mysql'|" config/autoload/doctrine.local.php
+    fi
+    # OAuth2 na API
+    if [ "$SERVICE" = "api" ]; then
+        cat <<EOF > config/autoload/oauth2.local.php
+<?php
+return [
+    'oauth2' => [
+        'issuer' => 'http://api.localhost',
+        'client_id' => 'dotkernel_client',
+        'client_secret' => 'dotkernel_secret',
+        'redirect_uri' => 'http://api.localhost/oauth/callback',
+        'token_endpoint' => 'http://api.localhost/oauth/token',
+        'authorize_endpoint' => 'http://api.localhost/oauth/authorize',
+        'jwt_secret' => 'jwtsecretkey123',
+        'scopes' => ['read', 'write', 'admin'],
+    ],
+];
+EOF
+    fi
+    # Redis no Frontend
+    if [ "$SERVICE" = "frontend" ]; then
+        cat <<EOF > config/autoload/redis.local.php
+<?php
+return [
+    'redis' => [
+        'host' => 'redis',
+        'port' => 6379,
+        'password' => 'redispass',
+    ],
+];
+EOF
+    fi
+done
 
-    for dir in "admin.$DOMAIN" "api.$DOMAIN" "www.$DOMAIN" "packages.$DOMAIN"; do
-        cd "$PROJECT_DIR/src/$dir"
-        composer install >> "$LOG_FILE" 2>&1 &
-        until [ -d "$PROJECT_DIR/src/$dir/vendor" ]; do
-            echo "⏳ Aguardando Composer em $dir..." | tee -a "$LOG_FILE"
-            sleep 2
-        done
-        echo "✅ Composer concluído em $dir!" | tee -a "$LOG_FILE"
-    done
-}
+# Implantação da stack
+echo "$RUNNING Implantando stack $STACK_NAME $CHECK" | tee -a "$LOG_DIR/deploy.log"
+docker-compose -f "$BASE_DIR/docker-compose.yml" up -d --build || { echo "$ERROR Falha ao implantar stack!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
 
-# 📋 Geração de Estruturas SQL
-generate_sql_structures() {
-    echo "📋 Gerando estruturas SQL para todos os bancos..." | tee -a "$LOG_FILE"
-    mkdir -p "$PROJECT_DIR/db"
+# Aguarda serviços
+echo "$RUNNING Aguardando serviços $CHECK" | tee -a "$LOG_DIR/deploy.log"
+until docker exec mysql mysqladmin ping -h localhost -u root -prootpass >/dev/null 2>&1; do
+    echo "$INFO Aguardando MySQL..." | tee -a "$LOG_DIR/deploy.log"
+    sleep 5
+done
+until docker exec redis redis-cli -a redispass PING >/dev/null 2>&1; do
+    echo "$INFO Aguardando Redis..." | tee -a "$LOG_DIR/deploy.log"
+    sleep 5
+done
 
-    # MySQL
-    cat <<EOF > "$PROJECT_DIR/db/mysql_structure.sql"
-CREATE TABLE IF NOT EXISTS projects (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    domain VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-INSERT INTO projects (name, domain) VALUES ('$PROJECT_NAME', '$DOMAIN');
+# Executa fixtures e testes
+echo "$RUNNING Executando fixtures e testes $CHECK" | tee -a "$LOG_DIR/deploy.log"
+for SERVICE in api admin frontend light; do
+    cd "$BASE_DIR/$SERVICE" || { echo "$ERROR Não foi possível acessar $SERVICE!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
+    docker build -t "dotkernel-$SERVICE" . || { echo "$ERROR Falha ao construir $SERVICE!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
+    docker run --rm -v "$(pwd):/var/www/$SERVICE" --network $NETWORK_NAME "dotkernel-$SERVICE" composer install || { echo "$ERROR Falha ao instalar dependências de $SERVICE!" | tee -a "$LOG_DIR/deploy.log"; exit 1; }
+    # Fixtures
+    docker run --rm -v "$(pwd):/var/www/$SERVICE" --network $NETWORK_NAME "dotkernel-$SERVICE" php bin/doctrine orm:schema-tool:update --force --dump-sql > "$LOG_DIR/$SERVICE-fixtures.log" 2>&1
+    docker run --rm -v "$(pwd):/var/www/$SERVICE" --network $NETWORK_NAME "dotkernel-$SERVICE" php bin/doctrine fixtures:load --no-interaction >> "$LOG_DIR/$SERVICE-fixtures.log" 2>&1 || echo "$WARNING Fixtures não disponíveis em $SERVICE" | tee -a "$LOG_DIR/deploy.log"
+    # Testes
+    docker run --rm -v "$(pwd):/var/www/$SERVICE" --network $NETWORK_NAME "dotkernel-$SERVICE" vendor/bin/phpunit --log-junit "$LOG_DIR/$SERVICE-phpunit.xml" >> "$LOG_DIR/$SERVICE-tests.log" 2>&1 || echo "$WARNING PHPUnit falhou ou não configurado em $SERVICE" | tee -a "$LOG_DIR/deploy.log"
+    if [ -f "vendor/bin/behat" ]; then
+        docker run --rm -v "$(pwd):/var/www/$SERVICE" --network $NETWORK_NAME "dotkernel-$SERVICE" vendor/bin/behat >> "$LOG_DIR/$SERVICE-behat.log" 2>&1 || echo "$WARNING Behat falhou ou não configurado em $SERVICE" | tee -a "$LOG_DIR/deploy.log"
+    fi
+done
+
+# Configuração do Redis para usuários com ACL
+echo "$RUNNING Configurando Redis para usuários com ACL $CHECK" | tee -a "$LOG_DIR/deploy.log"
+docker exec redis redis-cli -a redispass <<EOF
+SET user:1 '{"id": 1, "name": "Admin User", "email": "admin@example.com", "roles": ["admin"], "permissions": {"read": true, "write": true, "delete": true}, "capabilities": {"iot_control": true}, "capillarity": {"devices": ["device1", "device2"]}}'
+SET user:2 '{"id": 2, "name": "Regular User", "email": "user@example.com", "roles": ["user"], "permissions": {"read": true, "write": false, "delete": false}, "capabilities": {"iot_control": false}, "capillarity": {"devices": ["device3"]}}'
 EOF
 
-    # SQL Server
-    cat <<EOF > "$PROJECT_DIR/db/sqlserver_structure.sql"
-IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'projects')
-BEGIN
-    CREATE TABLE projects (
-        id INT IDENTITY(1,1) PRIMARY KEY,
-        name NVARCHAR(255) NOT NULL,
-        domain NVARCHAR(255) NOT NULL,
-        created_at DATETIME DEFAULT GETDATE()
-    );
-    INSERT INTO projects (name, domain) VALUES ('$PROJECT_NAME', '$DOMAIN');
-END
+# Geração do desinstalador
+echo "$RUNNING Gerando desinstalador uninstall.sh $CHECK" | tee -a "$LOG_DIR/deploy.log"
+cat <<EOF > "$BIN_DIR/uninstall.sh"
+#!/bin/bash
+echo "$INFO Desinstalando stack $STACK_NAME..." | tee -a "$LOG_DIR/uninstall.log"
+cd "$BASE_DIR" || { echo "$ERROR Não foi possível acessar $BASE_DIR!" | tee -a "$LOG_DIR/uninstall.log"; exit 1; }
+docker-compose down -v
+docker network rm $NETWORK_NAME 2>/dev/null || echo "$WARNING Rede já removida" | tee -a "$LOG_DIR/uninstall.log"
+docker volume rm mysql-data redis-data 2>/dev/null || echo "$WARNING Volumes já removidos" | tee -a "$LOG_DIR/uninstall.log"
+rm -rf "$BASE_DIR"
+echo "$CHECK Stack $STACK_NAME desinstalado com sucesso!" | tee -a "$LOG_DIR/uninstall.log"
 EOF
+chmod +x "$BIN_DIR/uninstall.sh"
 
-    # Oracle
-    cat <<EOF > "$PROJECT_DIR/db/oracle_structure.sql"
-CREATE TABLE projects (
-    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    name VARCHAR2(255) NOT NULL,
-    domain VARCHAR2(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-INSERT INTO projects (name, domain) VALUES ('$PROJECT_NAME', '$DOMAIN');
-EOF
-
-    # MongoDB
-    cat <<EOF > "$PROJECT_DIR/db/mongo_init.js"
-db.projects.insertOne({
-    name: "$PROJECT_NAME",
-    domain: "$DOMAIN",
-    created_at: new Date()
-});
-EOF
-
-    # Redis
-    cat <<EOF > "$PROJECT_DIR/db/redis_init.sh"
-redis-cli -a $REDIS_PASS <<EOL
-SET project:$PROJECT_NAME:domain $DOMAIN
-EOL
-EOF
-    chmod +x "$PROJECT_DIR/db/redis_init.sh"
-}
-
-# ⚙️ Configuração de Bancos
-configure_databases() {
-    echo "⚙️ Configurando bancos..." | tee -a "$LOG_FILE"
-
-    # MySQL
-    until docker exec -i $(docker ps -q -f name=mysql) mysql -u$MYSQL_USER -p$MYSQL_PASS ${PROJECT_NAME}_db < "$PROJECT_DIR/db/mysql_structure.sql"; do
-        echo "⏳ Aguardando MySQL..." | tee -a "$LOG_FILE"
-        sleep 2
-    done
-    echo "✅ MySQL configurado!" | tee -a "$LOG_FILE"
-
-    # SQL Server
-    until docker exec -i $(docker ps -q -f name=sqlserver) /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SQLSERVER_PASS" -d master -i "$PROJECT_DIR/db/sqlserver_structure.sql"; do
-        echo "⏳ Aguardando SQL Server..." | tee -a "$LOG_FILE"
-        sleep 2
-    done
-    echo "✅ SQL Server configurado!" | tee -a "$LOG_FILE"
-
-    # Oracle
-    until docker exec -i $(docker ps -q -f name=oracle) sqlplus -s sys/$ORACLE_PASS@XE as sysdba @"$PROJECT_DIR/db/oracle_structure.sql"; do
-        echo "⏳ Aguardando Oracle..." | tee -a "$LOG_FILE"
-        sleep 2
-    done
-    echo "✅ Oracle configurado!" | tee -a "$LOG_FILE"
-
-    # MongoDB
-    until docker exec -i $(docker ps -q -f name=mongodb) mongosh -u $MONGO_USER -p $MONGO_PASS --authenticationDatabase admin < "$PROJECT_DIR/db/mongo_init.js"; do
-        echo "⏳ Aguardando MongoDB..." | tee -a "$LOG_FILE"
-        sleep 2
-    done
-    echo "✅ MongoDB configurado!" | tee -a "$LOG_FILE"
-
-    # Redis
-    until "$PROJECT_DIR/db/redis_init.sh"; do
-        echo "⏳ Aguardando Redis..." | tee -a "$LOG_FILE"
-        sleep 2
-    done
-    echo "✅ Redis configurado!" | tee -a "$LOG_FILE"
-}
-
-# 🧪 Testes com Aguarde
-run_tests() {
-    echo "🧪 Iniciando testes..." | tee -a "$LOG_FILE"
-    sudo apt-get install -y curl phpunit >> "$LOG_FILE" 2>&1
-    check_status "Instalação de ferramentas de teste"
-
-    for subdomain in "admin.$DOMAIN" "api.$DOMAIN" "www.$DOMAIN" "packages.$DOMAIN"; do
-        until curl -s "http://$subdomain" > /dev/null; do
-            echo "⏳ Aguardando $subdomain..." | tee -a "$LOG_FILE"
-            sleep 2
-        done
-        echo "✅ $subdomain acessível!" | tee -a "$LOG_FILE"
-    done
-
-    # Testes do Dotkernel e Laminas
-    for dir in "admin.$DOMAIN" "api.$DOMAIN" "www.$DOMAIN"; do
-        cd "$PROJECT_DIR/src/$dir"
-        phpunit >> "$LOG_FILE" 2>&1
-        check_status "Testes do $dir"
-    done
-}
-
-# 📋 Criação do Arquivo Hosts
-create_hosts_file() {
-    echo "📋 Gerando hosts.txt..." | tee -a "$LOG_FILE"
-    cat <<EOF > "$PROJECT_DIR/hosts.txt"
-# Adicione ao C:\Windows\System32\drivers\etc\hosts (execute como Administrador)
-127.0.0.1 admin.$DOMAIN
-127.0.0.1 api.$DOMAIN
-127.0.0.1 www.$DOMAIN
-127.0.0.1 packages.$DOMAIN
-EOF
-    check_status "Geração do arquivo hosts"
-}
-
-# 🌟 Executa a Implantação
-echo "🚀 Iniciando implantação completa..." | tee -a "$LOG_FILE"
-generate_config_files
-provision_environment
-install_dependencies
-generate_sql_structures
-configure_databases
-run_tests
-create_hosts_file
-
-echo "🎉 Implantação concluída com sucesso!" | tee -a "$LOG_FILE"
-echo "Acesse os serviços em:" | tee -a "$LOG_FILE"
-echo "- Admin: http://admin.$DOMAIN" | tee -a "$LOG_FILE"
-echo "- API: http://api.$DOMAIN" | tee -a "$LOG_FILE"
-echo "- WWW: http://www.$DOMAIN" | tee -a "$LOG_FILE"
-echo "- Packages: http://packages.$DOMAIN" | tee -a "$LOG_FILE"
-echo "Atualize o arquivo hosts do Windows com $PROJECT_DIR/hosts.txt" | tee -a "$LOG_FILE"
+# Exibir resultados
+echo "$CHECK Deploy concluído!" | tee -a "$LOG_DIR/deploy.log"
+echo "Acesse os serviços em:" | tee -a "$LOG_DIR/deploy.log"
+echo " - API (OAuth2): http://api.localhost" | tee -a "$LOG_DIR/deploy.log"
+echo " - Admin: http://admin.localhost" | tee -a "$LOG_DIR/deploy.log"
+echo " - Frontend: http://frontend.localhost" | tee -a "$LOG_DIR/deploy.log"
+echo " - Light: http://light.localhost" | tee -a "$LOG_DIR/deploy.log"
+echo "Valores do .env:" | tee -a "$LOG_DIR/deploy.log"
+cat "$BASE_DIR/.env" | tee -a "$LOG_DIR/deploy.log"
+echo "Logs disponíveis em: $LOG_DIR" | tee -a "$LOG_DIR/deploy.log"
+echo "Para desinstalar, execute: $BIN_DIR/uninstall.sh" | tee -a "$LOG_DIR/deploy.log"
