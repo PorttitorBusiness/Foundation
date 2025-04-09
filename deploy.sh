@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# 🚀 Script de deploy completo do projeto Foundation no Ubuntu 24.10
-# Gera tudo dentro de deploy/localhost/ com SSL, dhparams e HTTP/3 em prod
+# 🚀 Script de deploy do projeto Foundation no WSL2 Ubuntu 24.04
+# Gera tudo em deploy/localhost/ com SSL, dhparams e HTTP/3 em prod
 
 # Emojis para feedback
 CHECK="✅"
@@ -40,6 +40,24 @@ check_error() {
         echo "$ERROR Erro: $1"
         exit 1
     fi
+}
+
+# Função para instalar pré-requisitos no WSL2
+install_prerequisites() {
+    echo "$INFO Instalando pré-requisitos no WSL2 Ubuntu 24.04 $CHECK"
+    sudo apt-get update
+    sudo apt-get install -y docker.io docker-compose php-cli php-zip unzip curl nodejs npm jq
+    sudo systemctl enable docker
+    sudo systemctl start docker
+    sudo usermod -aG docker "$USER"
+    curl -sS https://getcomposer.org/installer | php
+    sudo mv composer.phar /usr/local/bin/composer
+    sudo npm install -g n
+    sudo n latest
+    # Configurar Docker para WSL2 (evitar falhas comuns)
+    sudo sh -c 'echo "{\"features\": {\"buildkit\": true}}" > /etc/docker/daemon.json'
+    sudo systemctl restart docker
+    check_error "Falha ao instalar pré-requisitos"
 }
 
 # Função para gerar config.json
@@ -165,7 +183,7 @@ DEV_MYSQL_HOST=mysql_external
 DEV_MYSQL_PORT=3306
 DEV_MYSQL_ROOT_PASSWORD=rootpass-dev
 DEV_MYSQL_DATABASE=foundation_db_dev
-DEV_MYSQL_USER=foundation_dev
+DEV_MYSQL_USER=foundation médicale_dev
 DEV_MYSQL_PASSWORD=foundationpass-dev
 DEV_REDIS_HOST=redis_external
 DEV_REDIS_PORT=6379
@@ -262,7 +280,7 @@ generate_config_files() {
     # Extrair configurações do JSON
     local HTTP_PORTS=($(jq -r ".environments.$ENV.http_ports[]" "$CONFIG_FILE"))
     local HTTPS_PORTS=($(jq -r ".environments.$ENV.https_ports[]" "$CONFIG_FILE"))
-    local LIVERELOAD_PORT=$(jq -r ".environments.$ENV.livereload_port" "$CONFIG_FILE")
+    local LIVERELOAD_PORT=$(jq -r ".environments.$ENV.livereload_port" "$CONFIG_FILE"))
 
     # Geração do docker-compose.yml
     echo "$BUILD Gerando docker-compose.yml para $ENV $CHECK" | tee -a "$LOG_DIR/deploy.log"
@@ -682,4 +700,327 @@ http {
         http3 on;
         location / {
             proxy_pass http://$ENV-light:80;
- 
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+
+    server {
+        listen 443 ssl http2;
+        listen 443 quic reuseport;
+        server_name foundation.$DOMAIN;
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_dhparam /etc/nginx/ssl/dhparams.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
+        http3 on;
+        location / {
+            proxy_pass http://$ENV-foundation:80;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+}
+EOF
+    else
+        cat <<EOF > "nginx/nginx.conf"
+events {}
+http {
+    server {
+        listen 80;
+        server_name $DOMAIN api.$DOMAIN admin.$DOMAIN frontend.$DOMAIN light.$DOMAIN foundation.$DOMAIN;
+        return 301 https://\$host\$request_uri;
+    }
+
+    server {
+        listen 443 ssl;
+        server_name api.$DOMAIN;
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
+        location / {
+            proxy_pass http://$ENV-api:80;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        server_name admin.$DOMAIN;
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
+        location / {
+            proxy_pass http://$ENV-admin:80;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        server_name frontend.$DOMAIN;
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
+        location / {
+            proxy_pass http://$ENV-frontend:80;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        server_name light.$DOMAIN;
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
+        location / {
+            proxy_pass http://$ENV-light:80;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        server_name foundation.$DOMAIN;
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
+        location / {
+            proxy_pass http://$ENV-foundation:80;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+        location /$LIVERELOAD_PORT {
+            proxy_pass http://$ENV-foundation:$LIVERELOAD_PORT;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+        }
+    }
+}
+EOF
+    fi
+
+    # Configuração do Core (OAuth2)
+    echo "$CONFIG Configurando Core para $ENV $CHECK" | tee -a "$LOG_DIR/deploy.log"
+    mkdir -p "foundation/Core/src/Controller"
+    cat <<EOF > "foundation/Core/src/Controller/AuthController.php"
+<?php
+namespace Core\Controller;
+
+use Laminas\Diactoros\Response\JsonResponse;
+
+class AuthController
+{
+    public function authorizeAction(): JsonResponse
+    {
+        \$params = \$_GET;
+        return isset(\$params['client_id']) && \$params['client_id'] === 'foundation_client_$ENV'
+            ? new JsonResponse(['code' => 'auth_code_foundation_$ENV'])
+            : new JsonResponse(['error' => 'Invalid client'], 401);
+    }
+
+    public function tokenAction(): JsonResponse
+    {
+        return new JsonResponse([
+            'access_token' => 'token_foundation_2025_$ENV',
+            'expires_in' => 3600,
+            'user' => ['email' => '$USER_EMAIL']
+        ]);
+    }
+}
+EOF
+
+    cat <<EOF > "foundation/Core/config/module.config.php"
+<?php
+return [
+    'router' => [
+        'routes' => [
+            'oauth2_authorize' => [
+                'type' => 'Literal',
+                'options' => [
+                    'route' => '/oauth2/authorize',
+                    'defaults' => [
+                        'controller' => Core\Controller\AuthController::class,
+                        'action' => 'authorize',
+                    ],
+                ],
+            ],
+            'oauth2_token' => [
+                'type' => 'Literal',
+                'options' => [
+                    'route' => '/oauth2/token',
+                    'defaults' => [
+                        'controller' => Core\Controller\AuthController::class,
+                        'action' => 'token',
+                    ],
+                ],
+            ],
+        ],
+    ],
+];
+EOF
+
+    # Configuração do Wallet
+    echo "$CONFIG Configurando Wallet para $ENV $CHECK" | tee -a "$LOG_DIR/deploy.log"
+    mkdir -p "foundation/Wallet/src/Controller"
+    cat <<EOF > "foundation/Wallet/src/Controller/WalletController.php"
+<?php
+namespace Wallet\Controller;
+
+use Laminas\Diactoros\Response\JsonResponse;
+
+class WalletController
+{
+    public function balanceAction(): JsonResponse
+    {
+        return new JsonResponse(['balance' => 1000.00, 'user' => '$USER_EMAIL']);
+    }
+}
+EOF
+
+    cat <<EOF > "foundation/Wallet/config/module.config.php"
+<?php
+return [
+    'router' => [
+        'routes' => [
+            'wallet_balance' => [
+                'type' => 'Literal',
+                'options' => [
+                    'route' => '/wallet/balance',
+                    'defaults' => [
+                        'controller' => Wallet\Controller\WalletController::class,
+                        'action' => 'balance',
+                    ],
+                ],
+            ],
+        ],
+    ],
+];
+EOF
+
+    # Configuração do IAGenerator
+    echo "$CONFIG Configurando IAGenerator para $ENV $CHECK" | tee -a "$LOG_DIR/deploy.log"
+    mkdir -p "foundation/IAGenerator/src/Service"
+    cat <<EOF > "foundation/IAGenerator/src/Service/CodeGeneratorService.php"
+<?php
+namespace IAGenerator\Service;
+
+class CodeGeneratorService
+{
+    public function generateModule(string \$moduleName): string
+    {
+        return "<?php\nnamespace \$moduleName;\nclass IndexController\n{\n    public function indexAction(): string\n    {\n        return 'Módulo \$moduleName gerado!';\n    }\n}";
+    }
+}
+EOF
+
+    cat <<EOF > "foundation/IAGenerator/config/module.config.php"
+<?php
+return [
+    'service_manager' => [
+        'factories' => [
+            IAGenerator\Service\CodeGeneratorService::class => function() {
+                return new IAGenerator\Service\CodeGeneratorService();
+            },
+        ],
+    ],
+];
+EOF
+
+    # Configuração do LiveReload (Angular)
+    echo "$CONFIG Configurando LiveReload (Angular) para $ENV $CHECK" | tee -a "$LOG_DIR/deploy.log"
+    mkdir -p "foundation/frontend"
+    cd "foundation/frontend" || check_error "Não foi possível acessar foundation/frontend"
+    npx @angular/cli@18 new foundation-frontend --skip-install --defaults --minimal
+    cat <<EOF > "src/app/app.component.html"
+<h1>Bem-vindo ao Foundation! 🎉</h1>
+<p><a href="https://api.$DOMAIN:${HTTPS_PORTS[0]}/oauth2/authorize?client_id=foundation_client_$ENV&redirect_uri=https://foundation.$DOMAIN:${HTTPS_PORTS[4]}/callback&response_type=code">Login OAuth2</a></p>
+EOF
+    cd "$ENV_BASE_DIR" || check_error "Não foi possível voltar ao diretório raiz"
+
+    # Instalar Dotkernel no serviço 'foundation'
+    echo "$DEPLOY Instalando Dotkernel para $ENV $CHECK" | tee -a "$LOG_DIR/deploy.log"
+    cd "foundation" || check_error "Não foi possível acessar foundation/"
+    composer create-project dotkernel/dotkernel . -n --no-scripts
+    check_error "Falha ao instalar Dotkernel"
+    cd "$ENV_BASE_DIR" || check_error "Não foi possível voltar ao diretório raiz"
+}
+
+# Função principal
+main() {
+    echo "$RUNNING Iniciando deploy do projeto Foundation no WSL2 versão $SCRIPT_VERSION $CHECK"
+
+    # Instalar pré-requisitos
+    install_prerequisites
+
+    # Adicionar subdomínios ao /etc/hosts (necessário no WSL2)
+    if ! grep -q "foundation.$DOMAIN" /etc/hosts; then
+        echo "127.0.0.1 $DOMAIN api.$DOMAIN admin.$DOMAIN frontend.$DOMAIN light.$DOMAIN foundation.$DOMAIN" | sudo tee -a /etc/hosts
+        check_error "Falha ao configurar /etc/hosts"
+    fi
+
+    # Gerar config.json e .env primeiro
+    generate_config_json
+    generate_env_file
+
+    # Processar cada ambiente
+    for ENV in "${ENVIRONMENTS[@]}"; do
+        echo "$INFO Processando ambiente: $ENV $CHECK"
+        generate_self_signed_certs "$ENV"
+        generate_config_files "$ENV"
+
+        # Criar rede Docker se não existir
+        docker network ls | grep -q "foundation-$ENV-network" || docker network create "foundation-$ENV-network"
+        check_error "Falha ao criar rede Docker para $ENV"
+
+        # Iniciar containers
+        cd "$DOMAIN_DIR/$ENV" || check_error "Não foi possível acessar $DOMAIN_DIR/$ENV"
+        echo "$DEPLOY Iniciando containers para $ENV $CHECK" | tee -a "logs/deploy.log"
+        docker-compose up -d --build
+        check_error "Falha ao iniciar containers para $ENV"
+
+        # Exibir informações de acesso
+        local HTTP_PORTS=($(jq -r ".environments.$ENV.http_ports[]" "$CONFIG_FILE"))
+        local HTTPS_PORTS=($(jq -r ".environments.$ENV.https_ports[]" "$CONFIG_FILE"))
+        local LIVERELOAD_PORT=$(jq -r ".environments.$ENV.livereload_port" "$CONFIG_FILE")
+        echo "🎉 Deploy do ambiente $ENV concluído!"
+        echo "--------------------------------------------------"
+        echo "🔗 Links de Acesso ($ENV):"
+        echo "API: https://api.$DOMAIN:${HTTPS_PORTS[0]}"
+        echo "Admin: https://admin.$DOMAIN:${HTTPS_PORTS[1]}"
+        echo "Frontend: https://frontend.$DOMAIN:${HTTPS_PORTS[2]}"
+        echo "Light: https://light.$DOMAIN:${HTTPS_PORTS[3]}"
+        echo "Foundation (Backend): https://foundation.$DOMAIN:${HTTPS_PORTS[4]}"
+        [ "$ENV" != "prod" ] && echo "Foundation (LiveReload): https://foundation.$DOMAIN:$LIVERELOAD_PORT"
+        echo "OAuth2 Authorize: https://api.$DOMAIN:${HTTPS_PORTS[0]}/oauth2/authorize?client_id=foundation_client_$ENV&redirect_uri=https://foundation.$DOMAIN:${HTTPS_PORTS[4]}/callback&response_type=code"
+        echo "OAuth2 Token: https://api.$DOMAIN:${HTTPS_PORTS[0]}/oauth2/token"
+        echo "--------------------------------------------------"
+        echo "$USER Usuário Simulado:"
+        echo "Email: $USER_EMAIL"
+        echo "Senha: $USER_PASSWORD"
+        echo "--------------------------------------------------"
+    done
+
+    echo "$CHECK Deploy completo para todos os ambientes!"
+    echo "🔍 Verifique os containers com: docker ps"
+}
+
+# Executar função principal
+main
