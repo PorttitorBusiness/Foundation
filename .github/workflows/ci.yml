@@ -1,96 +1,36 @@
-name: Foundation CI
+name: Foundation IO CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-24.04 # Usa Ubuntu 24.04 (compatível com WSL2)
-
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
-        env: [dev, test, prod] # Testa todos os ambientes
-
+        env: [dev, test, prod]
     steps:
-      # Checkout do código
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      # Configurar ambiente com Node.js, Docker e dependências (simulando WSL2)
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
+      - uses: actions/checkout@v4
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y docker.io docker-compose jq shellcheck
-          sudo systemctl start docker
-          sudo usermod -aG docker $USER
-          curl -sS https://getcomposer.org/installer | php
-          sudo mv composer.phar /usr/local/bin/composer
-          sudo npm install -g n
-          sudo n latest
-          # Configuração Docker para evitar falhas na nuvem (similar ao WSL2)
-          sudo sh -c 'echo "{\"features\": {\"buildkit\": true}}" > /etc/docker/daemon.json'
-          sudo systemctl restart docker
-
-      # Verificar sintaxe do script deploy.sh
-      - name: Lint deploy.sh
+          sudo apt-get install -y docker.io docker-compose php-cli unzip curl nodejs npm jq
+          curl -sS https://getcomposer.org/installer | php && sudo mv composer.phar /usr/local/bin/composer
+      - name: Lint Script
         run: shellcheck deploy.sh
-
-      # Executar deploy.sh para gerar arquivos
-      - name: Run deploy.sh
+      - name: Run Deploy
+        run: ./deploy.sh ${{ matrix.env == 'prod' && 'prod' || 'local' }}
+      - name: Build and Test Containers
+        working-directory: ./deploy/${{ matrix.env == 'prod' && 'foundation.io' || 'localhost' }}/${{ matrix.env }}
         run: |
-          chmod +x deploy.sh
-          # Simular /etc/hosts no CI (não precisa escrever, apenas log)
-          echo "Simulando adição de subdomínios ao /etc/hosts no CI"
-          ./deploy.sh
-
-      # Construir imagens Docker
-      - name: Build Docker Images
-        working-directory: ./deploy/localhost/${{ matrix.env }}
-        run: |
-          docker-compose build
-        env:
-          DOCKER_BUILDKIT: 1 # Usa BuildKit para builds mais rápidos
-
-      # Iniciar containers e verificar saúde
-      - name: Test Containers
-        working-directory: ./deploy/localhost/${{ matrix.env }}
-        run: |
-          docker-compose up -d
-          # Aguardar até que todos os serviços estejam saudáveis (timeout de 60s)
+          docker-compose up -d --build
           timeout 60s bash -c "until docker-compose ps | grep -q 'Up'; do sleep 5; done"
-          # Verificar se todos os serviços estão rodando
-          if [ $(docker-compose ps --services | wc -l) -eq $(docker-compose ps | grep 'Up' | wc -l) ]; then
-            echo "✅ Todos os serviços estão saudáveis!"
-          else
-            echo "❌ Alguns serviços falharam ao iniciar!"
-            docker-compose logs
-            exit 1
-          fi
-
-      # Parar containers após teste
-      - name: Stop Containers
-        if: always() # Executa mesmo se o teste falhar
-        working-directory: ./deploy/localhost/${{ matrix.env }}
-        run: |
           docker-compose down -v
-
-      # Verificar URLs simuladas
-      - name: Simulate Health Checks
+      - name: Run Laminas Tests
+        working-directory: ./deploy/${{ matrix.env == 'prod' && 'foundation.io' || 'localhost' }}/src
         run: |
-          if [ "${{ matrix.env }}" = "dev" ]; then
-            echo "Simulando acesso a https://api.localhost:8443 (dev)"
-          elif [ "${{ matrix.env }}" = "test" ]; then
-            echo "Simulando acesso a https://api.localhost:9443 (test)"
-          else
-            echo "Simulando acesso a https://api.localhost:443 (prod)"
-          fi
+          composer install
+          vendor/bin/phpunit --configuration ../../tests/phpunit.xml
