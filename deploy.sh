@@ -1,3 +1,4 @@
+
 #!/bin/bash
 ################################################################################
 # Deploy Completo Foundation IO - Otimizado com Laminas                        #
